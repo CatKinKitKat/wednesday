@@ -56,7 +56,7 @@ public class ProcessXML
     private void ValidateXml(string xml)
     {
         // Ensure the path to the XSD file is correct
-        string schemaPath = Path.Combine(AppContext.BaseDirectory, "record.xsd");
+        string schemaPath = Path.Combine(AppContext.BaseDirectory, "Schemas", "record.xsd");
         if (!File.Exists(schemaPath))
         {
             throw new FileNotFoundException($"The XSD schema file was not found at: {schemaPath}");
