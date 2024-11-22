@@ -14,22 +14,19 @@ public class ProcessXML
 {
     private readonly ILogger<ProcessXML> _logger;
     private readonly ServiceBusClient _serviceBusClient;
-    private readonly string _inputQueueName;
-    private readonly string _outputQueueName;
+    private readonly QueueConfiguration _queueConfig;
 
-    public ProcessXML(ILogger<ProcessXML> logger, ServiceBusClient serviceBusClient)
+    public ProcessXML(ILogger<ProcessXML> logger, ServiceBusClient serviceBusClient, QueueConfiguration queueConfig)
     {
         _logger = logger;
         _serviceBusClient = serviceBusClient;
-
-        // Read queue names from environment variables
-        _inputQueueName = Environment.GetEnvironmentVariable("InputQueueName") ?? throw new InvalidOperationException("InputQueueName is not configured.");
-        _outputQueueName = Environment.GetEnvironmentVariable("OutputQueueName") ?? throw new InvalidOperationException("OutputQueueName is not configured.");
+        _queueConfig = queueConfig;
     }
 
     [Function("ProcessXML")]
     public async Task Run(
-        [ServiceBusTrigger("%InputQueueName%", Connection = "ServiceBusConnection")] string inputXml)
+        [ServiceBusTrigger("%InputQueueName%", Connection = "ServiceBusConnection")] string inputXml,
+        FunctionContext context)
     {
         _logger.LogInformation("Received XML message: {Message}", inputXml);
 
@@ -48,8 +45,12 @@ public class ProcessXML
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing the XML message.");
-            throw; // Allow the function to retry if configured
+            _logger.LogError(ex, "Error processing the XML message. Sending to error queue.");
+
+            // Send the failed message to the error queue
+            await SendToErrorQueue(inputXml, ex.Message);
+
+            // Suppress the exception to avoid dead-lettering
         }
     }
 
@@ -105,11 +106,31 @@ public class ProcessXML
     {
         string xmlString = transformedXml.ToString(SaveOptions.DisableFormatting);
 
-        ServiceBusSender sender = _serviceBusClient.CreateSender(_outputQueueName);
+        ServiceBusSender sender = _serviceBusClient.CreateSender(_queueConfig.OutputQueueName);
         ServiceBusMessage message = new(xmlString);
 
         await sender.SendMessageAsync(message);
 
-        _logger.LogInformation("Published message to queue: {QueueName}", _outputQueueName);
+        _logger.LogInformation("Published message to queue: {QueueName}", _queueConfig.OutputQueueName);
+    }
+
+    private async Task SendToErrorQueue(string inputXml, string errorMessage)
+    {
+        ServiceBusSender errorSender = _serviceBusClient.CreateSender(_queueConfig.ErrorQueueName);
+
+        // Add metadata to the error message for debugging
+        ServiceBusMessage errorMessageToSend = new()
+        {
+            Body = BinaryData.FromString(inputXml),
+            ApplicationProperties =
+            {
+                { "ErrorMessage", errorMessage },
+                { "Timestamp", DateTime.UtcNow.ToString("o") }
+            }
+        };
+
+        await errorSender.SendMessageAsync(errorMessageToSend);
+
+        _logger.LogInformation("Sent message to error queue: {QueueName}", _queueConfig.ErrorQueueName);
     }
 }
